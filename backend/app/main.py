@@ -1,5 +1,5 @@
 """ServerDock API. Account and encrypted connection metadata are persistent; VPS files are not copied here."""
-import asyncio, os, sqlite3, time
+import asyncio, os, re, sqlite3, time
 from pathlib import Path
 from typing import Optional
 import jwt, psutil
@@ -14,6 +14,9 @@ ROOT = Path(os.getenv('MANAGED_ROOT', '/srv/serverdock')).resolve()
 DB_PATH = Path(os.getenv('DATABASE_PATH', '/var/lib/serverdock/serverdock.db'))
 SECRET = os.environ['JWT_SECRET']
 crypt = Fernet(os.environ['CONNECTION_ENCRYPTION_KEY'].encode())
+if len(SECRET) < 32 or 'replace_' in SECRET:
+    raise RuntimeError('JWT_SECRET must be a unique production secret of at least 32 characters')
+ALLOWED_SERVICES = {item.strip() for item in os.getenv('ALLOWED_SYSTEMD_SERVICES','').split(',') if item.strip()}
 pwd, auth = CryptContext(schemes=['bcrypt'], deprecated='auto'), HTTPBearer()
 app = FastAPI(title='ServerDock API')
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv('CORS_ORIGINS','http://localhost:5173').split(','), allow_credentials=True, allow_methods=['*'], allow_headers=['*'])
@@ -74,6 +77,7 @@ async def upload(path:str='/',file:UploadFile=File(...),_:dict=Depends(user)):
 @app.post('/services/{name}/action')
 async def service_action(name:str,data:ServiceAction,_:dict=Depends(user)):
     if data.action not in {'start','stop','restart','status'}: raise HTTPException(400,'Invalid action')
+    if not re.fullmatch(r'[a-zA-Z0-9@_.-]+', name) or name not in ALLOWED_SERVICES: raise HTTPException(403,'Service is not allowed')
     p=await asyncio.create_subprocess_exec('systemctl',data.action,f'{name}.service',stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE); out,err=await p.communicate(); return {'ok':p.returncode==0,'output':(out+err).decode()}
 @app.websocket('/ws/logs')
 async def logs(socket:WebSocket):
